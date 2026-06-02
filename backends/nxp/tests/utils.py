@@ -8,10 +8,17 @@
 import logging
 import os
 
+import numpy as np
+
+from executorch.backends.nxp.backend.ir.converter.conversion.translator import (
+    torch_type_to_numpy_type,
+)
+from executorch.backends.nxp.tests.executorch_pipeline import ModelInputSpec
 from executorch.devtools.visualization.visualization_utils import (
     visualize_with_clusters,
 )
 from executorch.exir import ExecutorchProgramManager
+from torch._subclasses import FakeTensor
 
 
 def save_pte_program(
@@ -32,3 +39,23 @@ def save_pte_program(
 
     visualize_with_clusters(prog.exported_program(), visualize_file_name, False)
     return filename
+
+
+def change_filepath_extension(path: str, extension: str) -> str:
+    base, _ = os.path.splitext(path)
+    return base + "." + extension
+
+
+def store_txt_input_tensor(
+    input_tensor_path: str,
+    tensor_spec: ModelInputSpec | FakeTensor,
+    quant_dataset: bool = False,
+):
+    dtype = np.int8 if quant_dataset else torch_type_to_numpy_type(tensor_spec.dtype)
+    input_tensor = np.fromfile(input_tensor_path, dtype=dtype)
+    int__max = np.iinfo(np.int32).max
+
+    with open(change_filepath_extension(input_tensor_path, "txt"), "w") as f:
+        f.write("Flattened tensor shape:" + str(input_tensor.shape))
+        f.write("\nOriginal tensor shape:" + str(list(tensor_spec.shape)) + "\n")
+        f.write(np.array2string(input_tensor, threshold=int__max))
