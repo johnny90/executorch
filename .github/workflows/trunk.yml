@@ -107,6 +107,7 @@ jobs:
         # base image's default ExecuTorch Python environment.
         python3.12 -m venv zephyr_test_venv
         source zephyr_test_venv/bin/activate
+        export EXECUTORCH_ZEPHYR_DTC=/usr/bin/dtc
 
         # Test zephyr backend
         .ci/scripts/test_zephyr.sh \

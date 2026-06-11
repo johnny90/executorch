@@ -99,6 +99,39 @@ cd "${EXECUTORCH_PROJ_ROOT}"
 . .ci/scripts/utils.sh
 . .ci/scripts/zephyr-utils.sh
 
+west() {
+  local args has_board has_dtc has_cmake_separator arg
+
+  if [[ "${1:-}" != "build" || -z "${EXECUTORCH_ZEPHYR_DTC:-}" ]]; then
+    command west "$@"
+    return
+  fi
+
+  args=("$@")
+  has_board=0
+  has_dtc=0
+  has_cmake_separator=0
+  for arg in "${args[@]}"; do
+    case "${arg}" in
+      -b|--board|-b=*|--board=*) has_board=1 ;;
+      -DDTC=*) has_dtc=1 ;;
+      --) has_cmake_separator=1 ;;
+    esac
+  done
+
+  if [[ ${has_board} -eq 1 && ${has_dtc} -eq 0 ]]; then
+    echo "Using DTC=${EXECUTORCH_ZEPHYR_DTC} for west build"
+    if [[ ${has_cmake_separator} -eq 1 ]]; then
+      command west "${args[@]}" "-DDTC=${EXECUTORCH_ZEPHYR_DTC}"
+    else
+      command west "${args[@]}" -- "-DDTC=${EXECUTORCH_ZEPHYR_DTC}"
+    fi
+    return
+  fi
+
+  command west "$@"
+}
+
 run_target_test_blocks_from_readme() {
   local readme_path="$1"
   local target="$2"
@@ -234,6 +267,7 @@ print_zephyr_diagnostics() {
   echo "ZEPHYR_SDK_INSTALL_DIR: ${ZEPHYR_SDK_INSTALL_DIR:-<unset>}"
   echo "ZEPHYR_TOOLCHAIN_VARIANT: ${ZEPHYR_TOOLCHAIN_VARIANT:-<unset>}"
   echo "ZEPHYR_SDK_RELEASE_PROXY_CACHE_DIR: ${ZEPHYR_SDK_RELEASE_PROXY_CACHE_DIR:-<unset>}"
+  echo "EXECUTORCH_ZEPHYR_DTC: ${EXECUTORCH_ZEPHYR_DTC:-<unset>}"
 
   sdk_version="$(python3 "${EXECUTORCH_PROJ_ROOT}/.ci/docker/common/zephyr_sdk_release_proxy.py" --print-version)"
   echo "Zephyr SDK version: ${sdk_version}"
