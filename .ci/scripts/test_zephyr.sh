@@ -185,6 +185,96 @@ run_west_sdk_install_with_proxy_fallback() {
   run_command_block_from_readme "${ZEPHYR_README_PATH}" "<!-- RUN west_sdk_install -->"
 }
 
+print_tool_details() {
+  local tool="$1"
+  local path
+
+  if path="$(command -v "${tool}" 2>/dev/null)"; then
+    echo "${tool}: ${path}"
+    file "${path}" || true
+    "${path}" --version || true
+  else
+    echo "${tool}: not found"
+  fi
+}
+
+print_path_details() {
+  local label="$1"
+  local path="$2"
+  local interpreter
+
+  echo "${label}: ${path}"
+  if [[ -e "${path}" ]]; then
+    ls -ld "${path}" || true
+    file "${path}" || true
+    interpreter="$(file "${path}" | sed -n 's/.*interpreter \([^,]*\).*/\1/p')"
+    if [[ -n "${interpreter}" && -x "${interpreter}" ]]; then
+      echo "${label} dynamic loader: ${interpreter}"
+      "${interpreter}" --list "${path}" || true
+    fi
+    if [[ -x "${path}" ]]; then
+      "${path}" --version || true
+    fi
+  else
+    echo "${label}: missing"
+  fi
+}
+
+print_zephyr_diagnostics() {
+  local sdk_version sdk_dir
+
+  echo "---- Zephyr diagnostics ----"
+  echo "uname -a: $(uname -a)"
+  echo "uname -m: $(uname -m)"
+  echo "PATH: ${PATH}"
+  echo "LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-<unset>}"
+  echo "VIRTUAL_ENV: ${VIRTUAL_ENV:-<unset>}"
+  echo "ZEPHYR_PROJ_ROOT: ${ZEPHYR_PROJ_ROOT:-<unset>}"
+  echo "EXECUTORCH_PROJ_ROOT: ${EXECUTORCH_PROJ_ROOT}"
+  echo "ZEPHYR_SDK_INSTALL_DIR: ${ZEPHYR_SDK_INSTALL_DIR:-<unset>}"
+  echo "ZEPHYR_TOOLCHAIN_VARIANT: ${ZEPHYR_TOOLCHAIN_VARIANT:-<unset>}"
+  echo "ZEPHYR_SDK_RELEASE_PROXY_CACHE_DIR: ${ZEPHYR_SDK_RELEASE_PROXY_CACHE_DIR:-<unset>}"
+
+  sdk_version="$(python3 "${EXECUTORCH_PROJ_ROOT}/.ci/docker/common/zephyr_sdk_release_proxy.py" --print-version)"
+  echo "Zephyr SDK version: ${sdk_version}"
+  echo "Zephyr SDK release assets for this host:"
+  python3 - <<PY
+import importlib.util
+spec = importlib.util.spec_from_file_location(
+    "zephyr_sdk_release_proxy",
+    "${EXECUTORCH_PROJ_ROOT}/.ci/docker/common/zephyr_sdk_release_proxy.py",
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print("host_tuple:", module.host_tuple())
+for name in module.asset_names("${sdk_version}", "arm-zephyr-eabi"):
+    print(" ", name)
+PY
+
+  for sdk_dir in \
+    "${HOME}/zephyr-sdk-${sdk_version}" \
+    "/opt/zephyr-sdk-${sdk_version}" \
+    "/var/lib/ci-user/zephyr-sdk-${sdk_version}"; do
+    if [[ -d "${sdk_dir}" ]]; then
+      echo "Found Zephyr SDK dir: ${sdk_dir}"
+      print_path_details "SDK dtc" "${sdk_dir}/hosttools/sysroots/x86_64-pokysdk-linux/usr/bin/dtc"
+      print_path_details "SDK arm-zephyr-eabi-g++" "${sdk_dir}/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-g++"
+      print_path_details "SDK arm-zephyr-eabi-gcc" "${sdk_dir}/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-gcc"
+    fi
+  done
+
+  print_tool_details python3
+  print_tool_details cmake
+  print_tool_details west
+  print_tool_details dtc
+  print_tool_details arm-zephyr-eabi-gcc
+  print_tool_details arm-zephyr-eabi-g++
+
+  echo "pip packages:"
+  python3 -m pip list | grep -E '^(cmake|west|pyelftools|ninja|jsonschema|setuptools|pip)[[:space:]]' || true
+  echo "---- End Zephyr diagnostics ----"
+}
+
 setup_zephyr_workspace() {
   # Check that zephyr/README.md and zephyr/executorch.yaml are in sync.
   verify_zephyr_readme
@@ -221,6 +311,7 @@ setup_zephyr_workspace() {
   # Install through a temporary local proxy so CI can use SDK release assets
   # cached in the Docker image and avoid downloading them in every job.
   run_west_sdk_install_with_proxy_fallback
+  print_zephyr_diagnostics
 
   # Setup git local user for Executorch git to allow
   # modules/lib/executorch/examples/arm/setup.sh to run inside CI later.
@@ -246,6 +337,7 @@ use_existing_zephyr_workspace() {
 
 if [[ ${SKIP_ZEPHYR_SETUP} -eq 1 ]]; then
   use_existing_zephyr_workspace
+  print_zephyr_diagnostics
 else
   setup_zephyr_workspace
 fi
@@ -271,6 +363,9 @@ for TARGET in "${TARGETS[@]}"; do
 
   echo "---- ${TARGET} Board ${BOARD} FVP setup ----"
   run_command_block_from_readme "${ZEPHYR_SAMPLES_README_PATH}" "<!-- RUN setup_${BOARD} -->"
+
+  echo "---- ${TARGET} tool diagnostics before README test blocks ----"
+  print_zephyr_diagnostics
 
   # Run all blocks that match <!-- RUN test_${target}* -->
   run_target_test_blocks_from_readme "${ZEPHYR_SAMPLES_README_PATH}" "${TARGET}"
