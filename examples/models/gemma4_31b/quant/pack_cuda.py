@@ -8,9 +8,10 @@
 
 Converts ``Int4Tensor`` weights to the ExecuTorch-internal
 ``CudaCoalescedInt4Tensor`` (which owns the scale/zero transpose to the
-coalesced [N, n_groups] layout) and passes ``IntxUnpackedToInt8Tensor`` through
-as ``nn.Parameter`` without conversion. The quantize_op_dispatch package
-(``int4_dispatch`` / ``int8_dispatch``) handles F.linear at runtime.
+coalesced [N, n_groups] layout) and passes ``CudaPackedInt6Tensor`` (GGUF Q6_K)
+and ``IntxUnpackedToInt8Tensor`` through as ``nn.Parameter`` without conversion.
+The quantize_op_dispatch package (``int4_dispatch`` / ``int6_dispatch`` /
+``int8_dispatch``) handles F.linear at runtime.
 
 No CUDA is required for packing.  The backend-agnostic ``pack_model``
 dispatcher lives in ``pack.py``.
@@ -31,6 +32,7 @@ from .pack import ModulePackerFn, pack_model  # noqa: F401
 def pack_linear_for_cuda(module: nn.Module, weights: dict[str, torch.Tensor]) -> None:
     """Assign a quantized weight to an ``nn.Linear`` module."""
     from executorch.backends.cuda.coalesced_int4_tensor import CudaCoalescedInt4Tensor
+    from executorch.backends.cuda.packed_int6_tensor import CudaPackedInt6Tensor
     from torchao.quantization import IntxUnpackedToInt8Tensor
     from torchao.quantization.quantize_.workflows.int4.int4_tensor import Int4Tensor
 
@@ -46,6 +48,10 @@ def pack_linear_for_cuda(module: nn.Module, weights: dict[str, torch.Tensor]) ->
         # constant-fold ops on parameters, so the transpose must already live in
         # the constant for the coalesced layout to pay off.
         w = CudaCoalescedInt4Tensor.from_int4_tensor(w)
+        module.weight = nn.Parameter(w, requires_grad=False)
+    elif isinstance(w, CudaPackedInt6Tensor):
+        # Already packed (GGUF Q6_K -> int6 in gguf_loader._convert_weight); the
+        # int6_dispatch F.linear handler reads the ql/qh planes directly.
         module.weight = nn.Parameter(w, requires_grad=False)
     elif isinstance(w, IntxUnpackedToInt8Tensor):
         module.weight = nn.Parameter(w, requires_grad=False)

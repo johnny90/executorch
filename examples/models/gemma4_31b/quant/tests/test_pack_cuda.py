@@ -18,6 +18,11 @@ import unittest
 import executorch.backends.cuda.quantize_op_dispatch  # noqa: F401
 import torch
 import torch.nn as nn
+from executorch.backends.cuda.packed_int6_tensor import (
+    CudaPackedInt6Tensor,
+    pack_int6,
+    unpack_int6,
+)
 from executorch.examples.models.gemma4_31b.quant.pack import pack_one
 from executorch.examples.models.gemma4_31b.quant.pack_cuda import (
     DEFAULT_CUDA_PACKERS,
@@ -122,6 +127,63 @@ class TestPackLinearInt8(unittest.TestCase):
         module = nn.Linear(64, 32, bias=False)
         with self.assertRaises(ValueError):
             pack_linear_for_cuda(module, {"weight": torch.randn(32, 64)})
+
+
+class TestPackLinearInt6(unittest.TestCase):
+    """pack_linear_for_cuda passes a CudaPackedInt6Tensor (GGUF Q6_K) through.
+
+    The pack/unpack round-trip is lossless and dequantize() == q * scale (no
+    CUDA required); the F.linear correctness check is CUDA-only.
+    """
+
+    def setUp(self):
+        torch.manual_seed(0)
+
+    def _make_int6(self, N, K, gs=16):
+        q = torch.randint(-32, 32, (N, K), dtype=torch.int8)
+        scale = (torch.rand(N, K // gs) * 0.1 + 0.01).to(torch.bfloat16)
+        ql, qh = pack_int6(q)
+        t = CudaPackedInt6Tensor(ql, qh, scale, [1, gs], torch.Size([N, K]))
+        return t, q, scale
+
+    def test_pack_unpack_roundtrip(self):
+        q = torch.randint(-32, 32, (64, 128), dtype=torch.int8)
+        ql, qh = pack_int6(q)
+        self.assertEqual(tuple(ql.shape), (64, 64))  # [N, K/2]
+        self.assertEqual(tuple(qh.shape), (64, 32))  # [N, K/4]
+        q_rt = unpack_int6(ql, qh, 64, 128).to(torch.int8)
+        self.assertTrue(torch.equal(q_rt, q))
+
+    def test_dequantize_equals_q_scale(self):
+        t, q, scale = self._make_int6(32, 128, gs=16)
+        ref = q.to(torch.bfloat16) * scale.to(torch.bfloat16).repeat_interleave(
+            16, dim=-1
+        )
+        self.assertTrue(torch.equal(t.dequantize(), ref))
+
+    def test_pack_linear_passthrough(self):
+        t, _, _ = self._make_int6(32, 128)
+        with torch.device("meta"):
+            module = nn.Linear(128, 32, bias=False)
+        pack_linear_for_cuda(module, {"weight": t})
+        self.assertIsInstance(module.weight.data, CudaPackedInt6Tensor)
+        self.assertEqual(module.weight.shape, torch.Size([32, 128]))
+
+    def test_matmul_correct(self):
+        _require_cuda(self)
+        t, q, scale = self._make_int6(256, 128, gs=16)
+        module = nn.Linear(128, 256, bias=False)
+        pack_linear_for_cuda(module, {"weight": t})
+        module.cuda()
+        x = torch.randn(1, 128, dtype=torch.bfloat16, device="cuda")
+        w_ref = (
+            q.to(torch.bfloat16)
+            * scale.to(torch.bfloat16).repeat_interleave(16, dim=-1)
+        ).cuda()
+        ref = torch.nn.functional.linear(x, w_ref)
+        out = module(x)
+        rel_error = (out.float() - ref.float()).abs().mean() / ref.float().abs().mean()
+        self.assertLess(rel_error.item(), 0.02)
 
 
 class TestPackEmbedding(unittest.TestCase):
